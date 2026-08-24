@@ -27,6 +27,14 @@ go.work.sum
 # env file
 .env
 
+# Project artifacts
+bin/
+.sysroots/
+uploads/
+*.log
+*.pid
+
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+uploads/

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>svar-wave — тестовый клиент</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    display: flex; justify-content: center;
+  }
+  main { width: 100%; max-width: 720px; }
+  h1 { font-size: 1.4rem; margin: 0 0 20px; }
+  h1 span { color: #6ee7b7; }
+  section {
+    background: #171a21; border: 1px solid #262b36;
+    border-radius: 12px; padding: 18px; margin-bottom: 16px;
+  }
+  h2 { font-size: 1rem; margin: 0 0 12px; color: #9aa4b2; font-weight: 600;
+       text-transform: uppercase; letter-spacing: .06em; }
+  button {
+    background: #2563eb; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 16px; font-size: .92rem; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #333c4d; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid #3a4252; color: #c3cbd8; }
+  button.ghost:hover { background: #222836; }
+  button.danger { background: #7f1d1d; }
+  button.danger:hover { background: #991b1b; }
+  button.small { padding: 5px 10px; font-size: .82rem; }
+  input[type=file] { color: #c3cbd8; max-width: 100%; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; }
+  #bar { height: 8px; background: #222836; border-radius: 4px; overflow: hidden; margin-top: 12px; display: none; }
+  #bar > div { height: 100%; width: 0; background: #6ee7b7; transition: width .15s; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  td { padding: 7px 6px; border-bottom: 1px solid #20252f; }
+  td.size { color: #8b94a3; white-space: nowrap; }
+  td.act { text-align: right; white-space: nowrap; }
+  #nowplaying { min-height: 24px; margin-bottom: 12px; font-size: .95rem; }
+  #nowplaying b { color: #6ee7b7; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #msg { font-size: .85rem; margin-left: 8px; }
+  .err { color: #f87171; } .ok { color: #6ee7b7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🌊 svar-<span>wave</span></h1>
+
+  <section>
+    <h2>Загрузка файла</h2>
+    <div class="row">
+      <input type="file" id="file" accept=".wav,.mp3,.flac,.ogg,.oga">
+      <label class="chk"><input type="checkbox" id="autoplay" checked> играть сразу</label>
+      <button id="uploadBtn">Загрузить</button>
+      <span id="msg"></span>
+    </div>
+    <div id="bar"><div></div></div>
+  </section>
+
+  <section>
+    <h2>Плеер</h2>
+    <div id="nowplaying">— ничего не воспроизводится —</div>
+    <div class="row">
+      <button id="pauseBtn">⏸ Пауза</button>
+      <button id="stopBtn" class="danger">⏹ Стоп</button>
+      <button id="refreshBtn" class="ghost">↻ Обновить список</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Файлы на сервере</h2>
+    <table id="files"><tr><td colspan="3" style="color:#8b94a3">пусто</td></tr></table>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const msg = (text, cls) => { const m = $('msg'); m.textContent = text; m.className = cls || ''; };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.statusText);
+  return r.json();
+}
+
+function fmt(ms) {
+  if (!ms && ms !== 0) return '';
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+$('uploadBtn').onclick = () => {
+  const f = $('file').files[0];
+  if (!f) return msg('выберите файл', 'err');
+  const bar = $('bar'); bar.style.display = 'block'; bar.firstElementChild.style.width = '0';
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/upload?autoplay=' + $('autoplay').checked);
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) bar.firstElementChild.style.width = (e.loaded / e.total * 100) + '%';
+  };
+  xhr.onload = () => {
+    setTimeout(() => bar.style.display = 'none', 400);
+    if (xhr.status === 201) {
+      const j = JSON.parse(xhr.responseText);
+      msg(`загружено: ${j.file}${j.error ? ' · ошибка воспроизведения: ' + j.error : ' · играет'}`, j.error ? 'err' : 'ok');
+      refresh();
+    } else {
+      let j = {}; try { j = JSON.parse(xhr.responseText); } catch {}
+      msg(j.message || ('ошибка ' + xhr.status), 'err');
+    }
+  };
+  xhr.onerror = () => { bar.style.display = 'none'; msg('сетевая ошибка', 'err'); };
+  const fd = new FormData(); fd.append('file', f);
+  xhr.send(fd);
+};
+
+$('stopBtn').onclick = () => api('/stop', { method: 'POST' }).then(refresh).catch(e => msg(e.message, 'err'));
+
+let paused = false;
+$('pauseBtn').onclick = async () => {
+  try {
+    const j = await api('/pause', { method: 'POST' });
+    paused = j.paused;
+    $('pauseBtn').textContent = paused ? '▶ Продолжить' : '⏸ Пауза';
+  } catch (e) { msg(e.message, 'err'); }
+};
+
+async function play(name) {
+  try { await api('/play/' + encodeURIComponent(name), { method: 'POST' }); paused = false; $('pauseBtn').textContent = '⏸ Пауза'; }
+  catch (e) { msg(e.message, 'err'); }
+}
+
+async function refresh() {
+  try {
+    const j = await api('/files');
+    const t = $('files');
+    t.innerHTML = '';
+    if (!j.files.length) { t.innerHTML = '<tr><td colspan="3" style="color:#8b94a3">пусто</td></tr>'; return; }
+    for (const f of j.files) {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        `<td>${f.name}</td><td class="size">${(f.size / 1048576).toFixed(2)} МБ</td>` +
+        `<td class="act"><button class="small">▶ Играть</button></td>`;
+      tr.querySelector('button').onclick = () => play(f.name);
+      t.appendChild(tr);
+    }
+  } catch (e) { msg(e.message, 'err'); }
+}
+
+async function poll() {
+  try {
+    const st = await api('/status');
+    const np = $('nowplaying');
+    if (st.file) {
+      np.innerHTML = `♪ <b>${st.file}</b> — ${fmt(st.position_ms)} / ${fmt(st.total_ms)}${st.paused ? ' · <i>пауза</i>' : ''}`;
+      paused = st.paused;
+      $('pauseBtn').textContent = paused ? '▶ Продолжить' : '⏸ Пауза';
+    } else {
+      np.textContent = '— ничего не воспроизводится —';
+    }
+  } catch {}
+}
+
+$('refreshBtn').onclick = refresh;
+refresh();
+setInterval(poll, 1000);
+poll();
+</script>
+</body>
+</html>
