@@ -36,7 +36,8 @@ func main() {
 		return
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfgPath := config.Resolve(*configPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -49,7 +50,7 @@ func main() {
 	}
 
 	if *daemonFlag {
-		absCfg, _ := filepath.Abs(*configPath)
+		absCfg, _ := filepath.Abs(cfgPath)
 		ctx := &daemon.Context{
 			PidFileName: cfg.Daemon.PidFile,
 			PidFilePerm: 0o644,

@@ -4,9 +4,35 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// EtcDir is the system-wide location searched before the working directory.
+// It is a variable so tests can point it at a temporary directory.
+var EtcDir = "/etc/svar-wave"
+
+// Resolve returns the config path to load. A path containing a directory
+// part is used as-is; a bare file name is looked up first in /etc/svar-wave
+// and then in the current working directory.
+func Resolve(path string) string {
+	if path == "" {
+		path = "config.yaml"
+	}
+	if filepath.IsAbs(path) || strings.ContainsRune(path, '/') {
+		return filepath.Clean(path)
+	}
+	if etc := filepath.Join(EtcDir, path); fileExists(etc) {
+		return etc
+	}
+	return path
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
 
 type HTTP struct {
 	Host        string `yaml:"host"`

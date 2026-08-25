@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -90,26 +91,60 @@ func (p *Player) Play(path string) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
+	name := filepath.Base(path)
+	s, format, err := decodeStream(name, f)
+	if err != nil {
+		f.Close()
+		return err
+	}
+	p.start(name, s, format, f)
+	return nil
+}
 
+// PlayBytes plays audio held in memory without touching the file system;
+// name is used for format detection and status reporting.
+func (p *Player) PlayBytes(name string, data []byte) error {
+	if err := p.ensureSpeaker(); err != nil {
+		return fmt.Errorf("audio device unavailable: %w", err)
+	}
+
+	s, format, err := decodeStream(name, nopCloser{bytes.NewReader(data)})
+	if err != nil {
+		return err
+	}
+	p.start(name, s, format, nil)
+	return nil
+}
+
+// nopCloser adds a no-op Close to a ReadSeeker so it satisfies the decoders.
+type nopCloser struct{ io.ReadSeeker }
+
+func (nopCloser) Close() error { return nil }
+
+func decodeStream(name string, r io.ReadCloser) (beep.StreamSeekCloser, beep.Format, error) {
 	var s beep.StreamSeekCloser
 	format := beep.Format{}
-	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+	var err error
+	switch ext := strings.ToLower(filepath.Ext(name)); ext {
 	case ".wav":
-		s, format, err = wav.Decode(f)
+		s, format, err = wav.Decode(r)
 	case ".mp3":
-		s, format, err = mp3.Decode(f)
+		s, format, err = mp3.Decode(r)
 	case ".flac":
-		s, format, err = flac.Decode(f)
+		s, format, err = flac.Decode(r)
 	case ".ogg", ".oga":
-		s, format, err = vorbis.Decode(f)
+		s, format, err = vorbis.Decode(r)
 	default:
 		err = fmt.Errorf("unsupported format %q", ext)
 	}
 	if err != nil {
-		f.Close()
-		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
+		return nil, beep.Format{}, fmt.Errorf("decode %s: %w", name, err)
 	}
+	return s, format, nil
+}
 
+// start switches playback to the given stream, stopping the previous track.
+func (p *Player) start(name string, s beep.StreamSeekCloser, format beep.Format, closer io.Closer) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stopLocked(true)
@@ -126,14 +161,13 @@ func (p *Player) Play(path string) error {
 	p.ctrl = &beep.Ctrl{Streamer: st, Paused: false}
 	p.streamer = s
 	p.format = format
-	p.file = f
+	p.file = closer
 	p.done = done
-	p.name = filepath.Base(path)
+	p.name = name
 
 	speaker.Play(beep.Seq(p.ctrl, beep.Callback(func() { p.onEnded(done) })))
 	p.log.Info("playing", "file", p.name, "sample_rate", int(format.SampleRate),
 		"channels", format.NumChannels, "duration", format.SampleRate.D(s.Len()).String())
-	return nil
 }
 
 // onEnded runs on the speaker goroutine when a track finishes naturally.

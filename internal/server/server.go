@@ -4,8 +4,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"os"
 	"path/filepath"
@@ -84,13 +86,21 @@ func (s *Server) handleUpload(c fiber.Ctx) error {
 			"unsupported file type, allowed: .wav .mp3 .flac .ogg")
 	}
 
-	dest := filepath.Join(s.cfg.Storage.Dir, name)
-	if err := c.SaveFile(fh, dest); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "save failed: "+err.Error())
+	save := true
+	switch strings.ToLower(c.Query("save")) {
+	case "0", "false", "no", "off":
+		save = false
 	}
-	s.log.Info("uploaded", "file", name, "size", fh.Size)
 
-	resp := fiber.Map{"status": "ok", "file": name, "size": fh.Size}
+	dest := filepath.Join(s.cfg.Storage.Dir, name)
+	if save {
+		if err := c.SaveFile(fh, dest); err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "save failed: "+err.Error())
+		}
+	}
+	s.log.Info("uploaded", "file", name, "size", fh.Size, "saved", save)
+
+	resp := fiber.Map{"status": "ok", "file": name, "size": fh.Size, "saved": save}
 
 	autoplay := s.cfg.Upload.Autoplay
 	switch strings.ToLower(c.Query("autoplay")) {
@@ -100,14 +110,34 @@ func (s *Server) handleUpload(c fiber.Ctx) error {
 		autoplay = false
 	}
 	if autoplay {
-		if err := s.player.Play(dest); err != nil {
+		var perr error
+		if save {
+			perr = s.player.Play(dest)
+		} else {
+			perr = playFromForm(s.player, name, fh)
+		}
+		if perr != nil {
 			resp["playing"] = false
-			resp["error"] = err.Error()
+			resp["error"] = perr.Error()
 		} else {
 			resp["playing"] = true
 		}
 	}
 	return c.Status(fiber.StatusCreated).JSON(resp)
+}
+
+// playFromForm decodes the uploaded multipart file in memory and plays it.
+func playFromForm(pl *player.Player, name string, fh *multipart.FileHeader) error {
+	f, err := fh.Open()
+	if err != nil {
+		return fmt.Errorf("open upload: %w", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("read upload: %w", err)
+	}
+	return pl.PlayBytes(name, data)
 }
 
 func (s *Server) handleList(c fiber.Ctx) error {
